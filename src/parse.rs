@@ -1,40 +1,39 @@
 use std::str::FromStr;
 
-use anyhow::Result;
+use anyhow::{Context, Result};
 use chrono::{NaiveTime, Weekday};
 use select::{
     document::Document,
     node::Node,
     predicate::{Attr, Name, Predicate},
 };
-use serde::Serialize;
 use thiserror::Error;
 
-#[derive(Serialize)]
+#[derive(Clone)]
 pub struct Course {
-    id: String,
-    title: String,
-    credits: u32,
+    pub id: String,
+    pub title: String,
+    pub hours: u32,
 }
 
-#[derive(Serialize)]
 pub struct Class {
-    id: String,
-    course: Course,
-    labels: Vec<String>,
-    capacity: u32,
-    enrolled: u32,
-    waiting: u32,
-    times: Vec<Time>,
-    professors: Vec<String>,
+    pub id: String,
+    pub course: Course,
+    pub labels: Vec<String>,
+    pub total_slots: u32,
+    pub filled_slots: u32,
+    pub special_students: i32,
+    pub open_slots: u32,
+    pub waiting_for_slot: u32,
+    pub times: Vec<Time>,
+    pub teachers: Vec<String>,
 }
 
-#[derive(Serialize)]
 pub struct Time {
-    weekday: Weekday,
-    time: NaiveTime,
-    credits: u32,
-    place: String,
+    pub weekday: Weekday,
+    pub time: NaiveTime,
+    pub credits: u32,
+    pub place: String,
 }
 
 #[derive(Debug, Error)]
@@ -63,7 +62,7 @@ impl FromStr for Time {
         let place = place.to_owned();
 
         let (weekday, time) = split_once(time, ".")?;
-        let weekday = match weekday.parse()? {
+        let weekday = match weekday.parse().with_context(|| format!("Parsing weekday"))? {
             1 => Weekday::Sun,
             2 => Weekday::Mon,
             3 => Weekday::Tue,
@@ -75,7 +74,7 @@ impl FromStr for Time {
         };
 
         let (time, credits) = split_once(time, "-")?;
-        let credits = credits.trim().parse()?;
+        let credits = credits.trim().parse().with_context(|| format!("Parsing credits"))?;
 
         let time = NaiveTime::parse_from_str(time, "%H%M")?;
 
@@ -93,6 +92,8 @@ impl Class {
         let fields = row
             .find(Name("td"))
             .map(|node| node.text().trim().to_owned())
+            // TODO: figure out how to preserve text after a <br>
+            // https://github.com/utkarshkukreti/select.rs/issues/51
             .collect::<Vec<_>>();
 
         let course_id = &fields[3];
@@ -108,19 +109,27 @@ impl Class {
             })
             .collect();
 
-        let credits = fields[6].parse()?;
-        let capacity = fields[7].parse()?;
-        let enrolled = fields[8].parse()?;
-        let waiting = if fields[11].is_empty() {
+        let hours = fields[6].parse().with_context(|| format!("Parsing hours"))?;
+        let total_slots = fields[7].parse().with_context(|| format!("Parsing total_slots"))?;
+        let filled_slots = fields[8].parse().with_context(|| format!("Parsing filled_slots"))?;
+        let special_students = fields[9].parse().with_context(|| format!("Parsing special_students"))?;
+
+        let open_slots = if fields[10] == "LOTADA" {
             0
         } else {
-            fields[11].parse()?
+            fields[10].parse().with_context(|| format!("Parsing open_slots"))?
+        };
+
+        let waiting_for_slot = if fields[11].is_empty() {
+            0
+        } else {
+            fields[11].parse().with_context(|| format!("Parsing waiting_for_slot"))?
         };
 
         let course = Course {
             id: course_id.clone(),
             title: course_title.to_owned(),
-            credits,
+            hours,
         };
 
         let times = fields[12]
@@ -129,7 +138,7 @@ impl Class {
             .map(str::parse)
             .collect::<Result<_>>()?;
 
-        let professors = fields[13]
+        let teachers = fields[13]
             .lines()
             .map(str::trim)
             .map(str::to_owned)
@@ -139,11 +148,13 @@ impl Class {
             id: class_id.clone(),
             course,
             labels,
-            capacity,
-            enrolled,
-            waiting,
+            total_slots,
+            filled_slots,
+            special_students,
+            open_slots,
+            waiting_for_slot,
             times,
-            professors,
+            teachers,
         })
     }
 }
